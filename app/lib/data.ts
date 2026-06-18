@@ -30,10 +30,20 @@ export async function fetchRevenue() {
 export async function fetchLatestInvoices() {
   try {
     const data = await sql<LatestInvoiceRaw[]>`
-      SELECT invoices.amount, customers.name, customers.image_url, customers.email, invoices.id
-      FROM invoices
-      JOIN customers ON invoices.customer_id = customers.id
-      ORDER BY invoices.date DESC
+      SELECT id, amount, name, image_url, email
+      FROM (
+        SELECT DISTINCT ON (LOWER(customers.email), invoices.amount, invoices.date, invoices.status)
+          invoices.id,
+          invoices.amount,
+          customers.name,
+          customers.image_url,
+          customers.email,
+          invoices.date
+        FROM invoices
+        JOIN customers ON invoices.customer_id = customers.id
+        ORDER BY LOWER(customers.email), invoices.amount, invoices.date, invoices.status, invoices.id
+      ) AS unique_invoices
+      ORDER BY date DESC
       LIMIT 5`;
 
     const latestInvoices = data.map((invoice) => ({
@@ -91,23 +101,40 @@ export async function fetchFilteredInvoices(
 
   try {
     const invoices = await sql<InvoicesTable[]>`
-      SELECT
-        invoices.id,
-        invoices.amount,
-        invoices.date,
-        invoices.status,
-        customers.name,
-        customers.email,
-        customers.image_url
-      FROM invoices
-      JOIN customers ON invoices.customer_id = customers.id
-      WHERE
-        customers.name ILIKE ${`%${query}%`} OR
-        customers.email ILIKE ${`%${query}%`} OR
-        invoices.amount::text ILIKE ${`%${query}%`} OR
-        invoices.date::text ILIKE ${`%${query}%`} OR
-        invoices.status ILIKE ${`%${query}%`}
-      ORDER BY invoices.date DESC
+      WITH filtered_invoices AS (
+        SELECT
+          invoices.id,
+          invoices.customer_id,
+          invoices.amount,
+          invoices.date,
+          invoices.status,
+          customers.name,
+          customers.email,
+          customers.image_url
+        FROM invoices
+        JOIN customers ON invoices.customer_id = customers.id
+        WHERE
+          customers.name ILIKE ${`%${query}%`} OR
+          customers.email ILIKE ${`%${query}%`} OR
+          invoices.amount::text ILIKE ${`%${query}%`} OR
+          invoices.date::text ILIKE ${`%${query}%`} OR
+          invoices.status ILIKE ${`%${query}%`}
+      )
+      SELECT id, customer_id, amount, date, status, name, email, image_url
+      FROM (
+        SELECT DISTINCT ON (LOWER(email), amount, date, status)
+          id,
+          customer_id,
+          amount,
+          date,
+          status,
+          name,
+          email,
+          image_url
+        FROM filtered_invoices
+        ORDER BY LOWER(email), amount, date, status, id
+      ) AS unique_invoices
+      ORDER BY date DESC
       LIMIT ${ITEMS_PER_PAGE} OFFSET ${offset}
     `;
 
@@ -120,16 +147,22 @@ export async function fetchFilteredInvoices(
 
 export async function fetchInvoicesPages(query: string) {
   try {
-    const data = await sql`SELECT COUNT(*)
-    FROM invoices
-    JOIN customers ON invoices.customer_id = customers.id
-    WHERE
-      customers.name ILIKE ${`%${query}%`} OR
-      customers.email ILIKE ${`%${query}%`} OR
-      invoices.amount::text ILIKE ${`%${query}%`} OR
-      invoices.date::text ILIKE ${`%${query}%`} OR
-      invoices.status ILIKE ${`%${query}%`}
-  `;
+    const data = await sql`
+      SELECT COUNT(*)
+      FROM (
+        SELECT DISTINCT ON (LOWER(customers.email), invoices.amount, invoices.date, invoices.status)
+          invoices.id
+        FROM invoices
+        JOIN customers ON invoices.customer_id = customers.id
+        WHERE
+          customers.name ILIKE ${`%${query}%`} OR
+          customers.email ILIKE ${`%${query}%`} OR
+          invoices.amount::text ILIKE ${`%${query}%`} OR
+          invoices.date::text ILIKE ${`%${query}%`} OR
+          invoices.status ILIKE ${`%${query}%`}
+        ORDER BY LOWER(customers.email), invoices.amount, invoices.date, invoices.status, invoices.id
+      ) AS unique_invoices
+    `;
 
     const totalPages = Math.ceil(Number(data[0].count) / ITEMS_PER_PAGE);
     return totalPages;
@@ -167,10 +200,14 @@ export async function fetchInvoiceById(id: string) {
 export async function fetchCustomers() {
   try {
     const customers = await sql<CustomerField[]>`
-      SELECT
-        id,
-        name
-      FROM customers
+      SELECT id, name
+      FROM (
+        SELECT DISTINCT ON (LOWER(email))
+          id,
+          name
+        FROM customers
+        ORDER BY LOWER(email), name ASC
+      ) AS unique_customers
       ORDER BY name ASC
     `;
 
